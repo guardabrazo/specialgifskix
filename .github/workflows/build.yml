@@ -6,24 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-14       # Apple Silicon runner (arm64)
-            target: aarch64-apple-darwin
-            gifski-name: gifski-mac-arm64
-
-          - platform: macos-13       # Intel runner (x64)
-            target: x86_64-apple-darwin
-            gifski-name: gifski-mac-x64
-
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            gifski-name: gifski-win-x64.exe
-
-    runs-on: ${{ matrix.platform }}
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +21,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
@@ -47,57 +31,27 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # ── macOS: install gifski from Homebrew (FFmpeg-enabled build) ──────────
-      - name: Install gifski (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install gifski
-          cp "$(brew --prefix)/bin/gifski" src-tauri/resources/${{ matrix.gifski-name }}
-          chmod 755 src-tauri/resources/${{ matrix.gifski-name }}
-
-      # ── Windows: download gifski from GitHub releases ────────────────────────
       - name: Install gifski (Windows)
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $release = Invoke-RestMethod `
-            -Uri "https://api.github.com/repos/ImageOptim/gifski/releases/latest" `
-            -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN" }
-          $asset = $release.assets | Where-Object { $_.name -match "windows" -or $_.name -match "win" } | Select-Object -First 1
-          if (-not $asset) { Write-Error "No Windows gifski asset found in latest release"; exit 1 }
-          Write-Host "Downloading $($asset.name) from $($asset.browser_download_url)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile gifski-win.zip
-          Expand-Archive gifski-win.zip -DestinationPath gifski-tmp
-          $exe = Get-ChildItem -Recurse gifski-tmp -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) { Write-Error "gifski.exe not found in archive"; exit 1 }
+          choco install gifski -y --no-progress
+          $exe = Get-ChildItem "C:\ProgramData\chocolatey\lib\gifski\tools" -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "gifski.exe not found"; exit 1 }
+          Write-Host "Found gifski at $($exe.FullName)"
           Copy-Item $exe.FullName src-tauri\resources\gifski-win-x64.exe
-          Write-Host "gifski installed: $(src-tauri\resources\gifski-win-x64.exe)"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Tauri build ─────────────────────────────────────────────────────────
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --target ${{ matrix.target }}
-
-      # ── Upload artifacts ─────────────────────────────────────────────────────
-      - name: Upload macOS DMG
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: SpecialGifskiX-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-          if-no-files-found: error
+          args: --target x86_64-pc-windows-msvc
 
       - name: Upload Windows installer
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: SpecialGifskiX-windows-x64
           path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           if-no-files-found: error

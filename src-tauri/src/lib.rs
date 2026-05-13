@@ -4,7 +4,8 @@ use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
 
 fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut cmd = silent_command(program);
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

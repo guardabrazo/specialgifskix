@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest   # Apple Silicon runner (arm64)
+          - platform: macos-14       # Apple Silicon runner (arm64)
             target: aarch64-apple-darwin
             gifski-name: gifski-mac-arm64
 
@@ -55,15 +55,25 @@ jobs:
           cp "$(brew --prefix)/bin/gifski" src-tauri/resources/${{ matrix.gifski-name }}
           chmod 755 src-tauri/resources/${{ matrix.gifski-name }}
 
-      # ── Windows: install gifski from Chocolatey (FFmpeg-enabled build) ──────
+      # ── Windows: download gifski from GitHub releases ────────────────────────
       - name: Install gifski (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install gifski -y --no-progress
-          $bin = (Get-Command gifski -ErrorAction SilentlyContinue).Source
-          if (-not $bin) { $bin = "$env:ChocolateyInstall\bin\gifski.exe" }
-          Copy-Item $bin src-tauri\resources\gifski-win-x64.exe
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/ImageOptim/gifski/releases/latest" `
+            -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN" }
+          $asset = $release.assets | Where-Object { $_.name -match "windows" -or $_.name -match "win" } | Select-Object -First 1
+          if (-not $asset) { Write-Error "No Windows gifski asset found in latest release"; exit 1 }
+          Write-Host "Downloading $($asset.name) from $($asset.browser_download_url)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile gifski-win.zip
+          Expand-Archive gifski-win.zip -DestinationPath gifski-tmp
+          $exe = Get-ChildItem -Recurse gifski-tmp -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "gifski.exe not found in archive"; exit 1 }
+          Copy-Item $exe.FullName src-tauri\resources\gifski-win-x64.exe
+          Write-Host "gifski installed: $(src-tauri\resources\gifski-win-x64.exe)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Tauri build ─────────────────────────────────────────────────────────
       - name: Build Tauri app

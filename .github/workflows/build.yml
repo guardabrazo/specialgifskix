@@ -34,15 +34,11 @@ jobs:
       - name: Install gifski (Windows)
         shell: pwsh
         run: |
-          choco install gifski -y --no-progress
-          Write-Host "Files in chocolatey gifski lib:"
-          Get-ChildItem "C:\ProgramData\chocolatey\lib\gifski" -Recurse | Select-Object FullName
-          $bin = Get-ChildItem "C:\ProgramData\chocolatey\lib\gifski" -Recurse |
-                 Where-Object { -not $_.PSIsContainer -and $_.Name -like "gifski*" } |
-                 Select-Object -First 1
-          if (-not $bin) { Write-Error "gifski binary not found"; exit 1 }
-          Write-Host "Found gifski at $($bin.FullName)"
-          Copy-Item $bin.FullName src-tauri\resources\gifski-win-x64.exe
+          cargo install gifski
+          $bin = "$env:USERPROFILE\.cargo\bin\gifski.exe"
+          if (-not (Test-Path $bin)) { Write-Error "gifski.exe not found at $bin"; exit 1 }
+          Write-Host "Built gifski at $bin"
+          Copy-Item $bin src-tauri\resources\gifski-win-x64.exe
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

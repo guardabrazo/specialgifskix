@@ -31,23 +31,17 @@ fn gifski_binary(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     let name = "gifski-linux-x64";
 
-    // In dev mode resource_dir points to target/debug/; resources land in target/debug/resources/.
-    // In production it points directly to the bundle's Resources folder.
     let path = [resource_dir.join(name), resource_dir.join("resources").join(name)]
         .into_iter()
         .find(|p| p.exists())
         .ok_or_else(|| format!("gifski binary not found (looked in {})", resource_dir.display()))?;
 
     #[cfg(unix)]
-    if path.exists() {
+    {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&path).map_err(|e| e.to_string())?.permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).map_err(|e| e.to_string())?;
-    }
-
-    if !path.exists() {
-        return Err(format!("gifski binary not found at {}", path.display()));
     }
 
     Ok(path)
@@ -91,9 +85,12 @@ fn scan_folder(folder: String) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// On macOS: gifski from Homebrew has built-in FFmpeg video support — call it directly.
+// On Windows: cargo-compiled gifski has no video support — use ffmpeg to extract
+//             frames to a temp dir first, then feed them to gifski.
 #[tauri::command]
 async fn convert_videos(app: AppHandle, settings: ConversionSettings) -> Result<(), String> {
-    let bin = gifski_binary(&app)?;
+    let gifski = gifski_binary(&app)?;
     let total = settings.files.len();
 
     for (i, file_str) in settings.files.iter().enumerate() {
@@ -123,23 +120,102 @@ async fn convert_videos(app: AppHandle, settings: ConversionSettings) -> Result<
         )
         .map_err(|e| e.to_string())?;
 
-        let status = Command::new(&bin)
-            .arg("--fps").arg(settings.fps.to_string())
-            .arg("--width").arg(settings.width.to_string())
-            .arg("--quality").arg(settings.quality.to_string())
-            .arg("-o").arg(&output)
-            .arg(&input)
-            .status()
-            .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "windows")]
+        convert_via_ffmpeg(&gifski, &input, &output, settings.fps, settings.width, settings.quality)
+            .map_err(|e| {
+                let msg = format!("Failed to convert {}: {}", file_name, e);
+                let _ = app.emit("conversion-error", msg.clone());
+                msg
+            })?;
 
-        if !status.success() {
-            let msg = format!("Failed to convert: {}", file_name);
-            app.emit("conversion-error", msg.clone()).map_err(|e| e.to_string())?;
-            return Err(msg);
+        #[cfg(not(target_os = "windows"))]
+        {
+            let status = Command::new(&gifski)
+                .arg("--fps").arg(settings.fps.to_string())
+                .arg("--width").arg(settings.width.to_string())
+                .arg("--quality").arg(settings.quality.to_string())
+                .arg("-o").arg(&output)
+                .arg(&input)
+                .status()
+                .map_err(|e| e.to_string())?;
+
+            if !status.success() {
+                let msg = format!("Failed to convert: {}", file_name);
+                app.emit("conversion-error", msg.clone()).map_err(|e| e.to_string())?;
+                return Err(msg);
+            }
         }
     }
 
     app.emit("conversion-complete", ()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn convert_via_ffmpeg(
+    gifski: &PathBuf,
+    input: &PathBuf,
+    output: &PathBuf,
+    fps: u32,
+    width: u32,
+    quality: u32,
+) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!(
+        "sgx_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+
+    let frames_pattern = tmp.join("frame%06d.png");
+
+    // Step 1: extract frames with ffmpeg
+    let ffmpeg_status = Command::new("ffmpeg")
+        .arg("-i").arg(input)
+        .arg("-vf").arg(format!("fps={fps},scale={width}:-1:flags=lanczos"))
+        .arg("-y")
+        .arg(&frames_pattern)
+        .status()
+        .map_err(|e| format!("ffmpeg not found: {e}"))?;
+
+    if !ffmpeg_status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err("ffmpeg frame extraction failed".into());
+    }
+
+    // Step 2: collect frame paths in order
+    let mut frames: Vec<PathBuf> = std::fs::read_dir(&tmp)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e == "png").unwrap_or(false))
+        .collect();
+
+    frames.sort();
+
+    if frames.is_empty() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err("no frames extracted by ffmpeg".into());
+    }
+
+    // Step 3: convert frames to GIF with gifski
+    let status = Command::new(gifski)
+        .arg("--fps").arg(fps.to_string())
+        .arg("--width").arg(width.to_string())
+        .arg("--quality").arg(quality.to_string())
+        .arg("-o").arg(output)
+        .args(&frames)
+        .status()
+        .map_err(|e| e.to_string())?;
+
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    if !status.success() {
+        return Err("gifski conversion failed".into());
+    }
+
     Ok(())
 }
 

@@ -3,6 +3,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
 
+fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = silent_command(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 #[derive(Deserialize)]
 struct ConversionSettings {
     files: Vec<String>,
@@ -50,7 +60,7 @@ fn gifski_binary(app: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 fn validate_gifski(app: AppHandle) -> Result<String, String> {
     let bin = gifski_binary(&app)?;
-    let out = Command::new(&bin)
+    let out = silent_command(&bin)
         .arg("--version")
         .output()
         .map_err(|e| e.to_string())?;
@@ -130,7 +140,7 @@ async fn convert_videos(app: AppHandle, settings: ConversionSettings) -> Result<
 
         #[cfg(not(target_os = "windows"))]
         {
-            let status = Command::new(&gifski)
+            let status = silent_command(&gifski)
                 .arg("--fps").arg(settings.fps.to_string())
                 .arg("--width").arg(settings.width.to_string())
                 .arg("--quality").arg(settings.quality.to_string())
@@ -172,7 +182,7 @@ fn convert_via_ffmpeg(
     let frames_pattern = tmp.join("frame%06d.png");
 
     // Step 1: extract frames with ffmpeg
-    let ffmpeg_status = Command::new("ffmpeg")
+    let ffmpeg_status = silent_command("ffmpeg")
         .arg("-i").arg(input)
         .arg("-vf").arg(format!("fps={fps},scale={width}:-1:flags=lanczos"))
         .arg("-y")
@@ -201,7 +211,7 @@ fn convert_via_ffmpeg(
     }
 
     // Step 3: convert frames to GIF with gifski
-    let status = Command::new(gifski)
+    let status = silent_command(gifski)
         .arg("--fps").arg(fps.to_string())
         .arg("--width").arg(width.to_string())
         .arg("--quality").arg(quality.to_string())
